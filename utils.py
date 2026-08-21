@@ -4,9 +4,23 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import json
+import os
+from .config import config
+from .model import GFR, PolynomialActivation
 
-from config import config
-from model import GFR, PolynomialActivation
+def format_param(name,vals):
+    if name =='ds':
+        return list(vals.astype(np.float32))
+    elif name in ['a', 'b','poly_coeff']:
+        return [list(vals.astype(np.float32))]
+    elif type(vals) == np.ndarray and  len(vals) == 1:
+        return float(vals[0])
+    else:
+        return vals
+    
+    
+
+
 
 def read_file(fname):
     arr = []
@@ -99,7 +113,7 @@ def plot_predictions(model, Is, fs, bin_size, xlim=None):
     axs[1].set_xlabel("$t$ $(s)$")
     fig.tight_layout()
 
-def get_dataset(params, threshold=0.6):
+def get_gfr_dataset(params, threshold=0.6):
     with open("model/labels.pickle", "rb") as f:
         labels = pickle.load(f)
     
@@ -270,3 +284,120 @@ def df_from_json(json_file):
                     d[key].append(x[key])
         return pd.DataFrame.from_dict(d)
     return {(a, b): get_df(json_file, a, b) for a, b in pairs}
+
+
+def load_labels(model_path, meta_path):
+    with open(model_path, 'rb') as file:
+        data = pickle.load(file)
+
+    meta = pd.read_csv(meta_path)
+
+    return pd.DataFrame(data), meta
+
+def select_cells(meta, species = None, structure = None, layer = None, marker = None):
+    '''
+    species = 'Mus musculus'
+    
+    'structure_parent__acronym'
+    'VISp','VISl','VISal','VISrl','VISli','VISpm','VISpl','VISam','VISpor','VISa'
+    
+    meta['structure__layer'].unique()
+    array(['5', '4', '2/3', '6a', '6b', '1'], dtype=object)
+
+    meta['line_name'].unique()
+    array(['Oxtr-T2A-Cre', 'Pvalb-IRES-Cre',
+       'Slc32a1-T2A-FlpO|Vipr2-IRES2-Cre', 'Cux2-CreERT2',
+       'Scnn1a-Tg3-Cre', 'Htr3a-Cre_NO152', 'Rorb-IRES2-Cre',
+       'Ctgf-T2A-dgCre', 'Nkx2-1-CreERT2', 'Vip-IRES-Cre',
+       'Chrna2-Cre_OE25', 'Nos1-CreERT2|Sst-IRES-FlpO', 'Scnn1a-Tg2-Cre',
+       'Nos1-CreERT2', 'Ntsr1-Cre_GN220', 'Esr2-IRES2-Cre',
+       'Tlx3-Cre_PL56', 'Vipr2-IRES2-Cre',
+       'Chrna2-Cre_OE25|Pvalb-T2A-Dre', 'Nr5a1-Cre', 'Ndnf-IRES2-dgCre',
+       'Sst-IRES-Cre', 'Gad2-IRES-Cre', 'Chat-IRES-Cre-neo',
+       'Slc17a6-IRES-Cre', 'Sim1-Cre_KJ18', 'Glt25d2-Cre_NF107',
+       'Rbp4-Cre_KL100', 'Penk-IRES2-Cre-neo',
+       'Htr3a-Cre_NO152|Pvalb-T2A-Dre', 'Esr2-IRES2-Cre|PhiC31-neo',
+       'Gng7-Cre_KH71', 'Pvalb-T2A-FlpO|Vipr2-IRES2-Cre',
+       'Pvalb-T2A-CreERT2', 'Esr2-IRES2-Cre-neo|PhiC31-neo',
+       'Esr2-IRES2-Cre-neo', 'Vipr2-IRES2-Cre-neo'], dtype=object) 
+    meta = meta[meta['donor__species'] == species]
+
+    microns layer names:
+    array(['L6CT', 'BC', 'MC', 'L3IT', 'L4IT', 'L2IT', 'L5IT', 'BPC', 'L6IT',
+       'L6SP', 'NGC', 'L5ET', 'L5NP'], dtype=object)
+    
+'''
+    if species is not None:
+        meta = meta[meta['donor__species'] == species]
+    if structure is not None:
+        meta = meta[meta['structure_parent__acronym'] == structure]
+    if layer is not None:
+        meta = meta[meta['structure__layer'].str.contains(layer)]
+    if marker is not None:
+        meta = meta[meta['line_name'].isin(marker)]
+    return meta.copy()
+
+def get_params_by_cell_type(ids,params):
+    gfr_params = [params.loc[id]['params'] for id in ids if id in params.index ]
+    return gfr_params
+
+
+def get_distribution(model):
+    param_names = ['a', 'b','ds','bin_size']
+    activation_function_params = ['max_current', 'max_firing_rate', 'poly_coeff', 'b','bin_size']
+    param_dict = {}
+    for name in param_names:
+        param_dict[name] = np.vstack([model[i][name] for i in range(len(model))])
+    param_dict['g'] = {}
+    for name in activation_function_params:
+        param_dict['g'][name] = np.vstack([model[i]['g'][name] for i in range(len(model))]) 
+    return param_dict
+    
+
+    
+def format_markers(markers):
+    ms = [m if type(m) == tuple else [m] for m in markers]
+    markers = ms
+    return markers
+
+
+def get_marker_dict(meta_path,model_path, cell_types,markers,bin_size, activation_bin_size,file=None,rebuild = False):
+    if os.path.exists(file) and not rebuild:
+        with open(file, 'rb') as f:
+            param_dists = pickle.load(f)
+        return param_dists
+
+    model,meta = load_labels(model_path, meta_path)
+    meta = meta.dropna(subset=['line_name'])
+    model = model[(bin_size, activation_bin_size)].dropna()
+    mouse_cells = select_cells(meta, species="Mus musculus")
+    fmt_markers = format_markers(markers)
+    cell_type_ids = [select_cells(mouse_cells,marker = m)['specimen__id'].tolist() for m in fmt_markers]
+    param_names = ['a', 'b','ds','bin_size']
+    activation_function_params = ['max_current', 'max_firing_rate', 'poly_coeff', 'b','bin_size']
+
+    param_dists = {}
+    for marker, cell_ids in zip(markers, cell_type_ids):
+        print(marker)
+        param_dists[marker] = {}
+        param_dists[marker] =  {param_name: {} for param_name in param_names}
+        param_dists[marker]['g'] = {param_name: {} for param_name in activation_function_params}
+        params = get_params_by_cell_type(cell_ids, model)
+        param_distributions = get_distribution(params)
+        means = {k: np.mean(param_distributions[k], axis=0) for k in param_names}
+        stds = {k: np.std(param_distributions[k], axis=0) for k in param_names}
+        means['g'] = {k: np.mean(param_distributions['g'][k], axis=0) for k in activation_function_params}
+        stds['g'] = {k: np.std(param_distributions['g'][k], axis=0) for k in activation_function_params}
+        for k in param_names:
+            param_dists[marker][k]['mean'] = means[k]
+            param_dists[marker][k]['std'] = stds[k]
+        for k in activation_function_params:
+            param_dists[marker]['g'][k]['mean'] = means['g'][k]
+            param_dists[marker]['g'][k]['std'] = stds['g'][k]
+    
+    if file is not None:
+        with open(file, 'wb') as f:
+            pickle.dump(param_dists, f)
+    return param_dists
+
+

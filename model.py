@@ -10,6 +10,8 @@ class BatchGFR(torch.nn.Module):
         self.g = BatchPolynomialActivation([model.g for model in models])
         self.bin_size = [model.bin_size for model in models]
         
+        
+        # In BatchGFR.__init__:
         self.ds = torch.nn.Parameter(models[0].ds.detach().cpu(), requires_grad=False)
         self.n_hidden = len(self.ds)
         
@@ -45,7 +47,7 @@ class GFR(torch.nn.Module):
         g, # activation function
         ds,
         bin_size,
-        freeze_g = True,
+        freeze_g = False,
         device = None
     ):
         super().__init__()
@@ -96,7 +98,7 @@ class GFR(torch.nn.Module):
         return model
 
     @classmethod
-    def from_params(cls, params, freeze_g=True, device=None):
+    def from_params(cls, params, freeze_g=False, device=None):
         g = PolynomialActivation.from_params(params["g"])
         model = cls(
             g, 
